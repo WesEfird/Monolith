@@ -98,6 +98,10 @@ func (cons *Console) executor(in string) {
 			fmt.Println(cons.SelectedEndpoint.MsgData)
 		case "exec":
 			cons.cmdExec(args)
+		case "download":
+			cons.cmdDownload(args)
+		case "upload":
+			cons.cmdUpload(args)
 		case "set":
 			cons.cmdSet(args)
 		default:
@@ -130,6 +134,8 @@ func (cons *Console) completer(in prompt.Document) []prompt.Suggest {
 			{Text: "Ping", Description: "Send a ping command to the endpoint."},
 			{Text: "Set", Description: "Tell the endpoint to set certain options."},
 			{Text: "Log", Description: "Displays a list of all message data received from this endpoint."},
+			{Text: "Download", Description: "Download a file from the endpoint."},
+			{Text: "Upload", Description: "Upload a file to the endpoint."},
 			{Text: "Exec", Description: "Execute a command on the remote endpoint."},
 		}
 	}

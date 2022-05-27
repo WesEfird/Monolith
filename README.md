@@ -10,7 +10,8 @@ A console based C2 (Command & Control) platform written in Go.
 - [x] Improve tracking of deployed endpoints. Possibly implement a database.
 - [x] Implement authentication between the server and endpoints.
 - [x] Implement the building of endpoint binaries from the server console.
-- [ ] Implement file transfers between the server and endpoints.
+- [x] Implement file transfers between the server and endpoints.
+- [ ] Implement DNS as a transport method for communicating with endpoints.
 - [ ] Support ability for a live shell session to an endpoint. (Currently only pseudo-live)
 - [ ] Write an endpoint in C. (SSPI is a nightmare)
 
@@ -20,12 +21,12 @@ Targeted and tested with Go 1.18.1
 
 [go-prompt](https://github.com/c-bata/go-prompt) is a required dependency.
 
-`go build github.com/WesEfird/MonolithServer`
+`go build github.com/WesEfird/Monolith`
 
-`./MonolithServer`
+`./Monolith`
 ### Client
-The client can be built using MonolithServer.
-Once the MonolithServer binary has been built and ran, use the `BuildEndpoint` command in the MonolithServer console.
+The client can be built using Monolith.
+Once the Monolith binary has been built and ran, use the `BuildEndpoint` command in the Monolith console.
 
 `BuildEndpoint <EndpointID> <Server IP> <Server Port> <Auth String>`
 

